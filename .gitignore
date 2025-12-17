@@ -54,3 +54,6 @@ Thumbs.db
 # Logs
 *.log
 
+/backend/storage/thumbnails
+/backend/storage/images
+memorybook.db
