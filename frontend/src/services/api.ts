@@ -129,9 +129,7 @@ export const imageApi = {
   },
 
   updateNotes: async (imageId: number, notes: string): Promise<Image> => {
-    const response = await api.put(`/images/${imageId}/notes`, notes, {
-      headers: { 'Content-Type': 'text/plain' }
-    })
+    const response = await api.put(`/images/${imageId}/notes`, { notes })
     return response.data
   },
 

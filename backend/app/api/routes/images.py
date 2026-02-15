@@ -1,14 +1,19 @@
+import logging
+import os
+from datetime import datetime
+from typing import List, Optional
+
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
-from typing import List, Optional
+
 from ...core.database import get_db
 from ...models import schemas
 from ...models.database import Image, Category, Tag
 from ...services.uploader import MultiThreadedUploader
-from ...services.image_processor import ImageProcessor
 from ...services.ocr_service import OCRService
-from sqlalchemy import or_, and_
-from datetime import datetime
+from ...services.tag_suggester import TagSuggester
+
+logger = logging.getLogger("memorybook")
 
 router = APIRouter(prefix="/images", tags=["images"])
 
@@ -21,10 +26,10 @@ async def upload_images(
     """Upload multiple images with batch processing"""
     if not files:
         raise HTTPException(status_code=400, detail="No files provided")
-    
+
     uploader = MultiThreadedUploader(db)
     result = uploader.upload_batch(files)
-    
+
     return schemas.BatchUploadResponse(**result)
 
 
@@ -41,13 +46,13 @@ async def get_images(
         joinedload(Image.tags),
         joinedload(Image.categories)
     )
-    
+
     if category_id:
         query = query.join(Image.categories).filter(Category.id == category_id)
-    
+
     if tag_id:
         query = query.join(Image.tags).filter(Tag.id == tag_id)
-    
+
     images = query.order_by(Image.upload_date.desc()).offset(skip).limit(limit).all()
     return images
 
@@ -66,21 +71,28 @@ async def get_image(image_id: int, db: Session = Depends(get_db)):
 
 @router.delete("/{image_id}")
 async def delete_image(image_id: int, db: Session = Depends(get_db)):
-    """Delete an image"""
+    """Delete an image and its associated files"""
     image = db.query(Image).filter(Image.id == image_id).first()
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
-    
-    # Delete files
-    import os
-    if os.path.exists(image.file_path):
-        os.remove(image.file_path)
-    if image.thumbnail_path and os.path.exists(image.thumbnail_path):
-        os.remove(image.thumbnail_path)
-    
+
+    # Save file paths before deletion
+    file_path = image.file_path
+    thumbnail_path = image.thumbnail_path
+
+    # Delete DB record first to ensure consistency
     db.delete(image)
     db.commit()
-    
+
+    # Then clean up files (non-critical if this fails)
+    try:
+        if file_path and os.path.exists(file_path):
+            os.remove(file_path)
+        if thumbnail_path and os.path.exists(thumbnail_path):
+            os.remove(thumbnail_path)
+    except OSError as e:
+        logger.warning("Failed to delete files for image %d: %s", image_id, e)
+
     return {"message": "Image deleted successfully"}
 
 
@@ -97,15 +109,14 @@ async def add_tags_to_image(
     ).filter(Image.id == image_id).first()
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
-    
+
     tags = db.query(Tag).filter(Tag.id.in_(tag_ids)).all()
-    # Only add tags that aren't already present
     existing_tag_ids = {tag.id for tag in image.tags}
     new_tags = [tag for tag in tags if tag.id not in existing_tag_ids]
     image.tags.extend(new_tags)
     db.commit()
     db.refresh(image)
-    
+
     return image
 
 
@@ -122,13 +133,13 @@ async def remove_tag_from_image(
     ).filter(Image.id == image_id).first()
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
-    
+
     tag = db.query(Tag).filter(Tag.id == tag_id).first()
     if tag and tag in image.tags:
         image.tags.remove(tag)
         db.commit()
         db.refresh(image)
-    
+
     return image
 
 
@@ -145,15 +156,14 @@ async def add_categories_to_image(
     ).filter(Image.id == image_id).first()
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
-    
+
     categories = db.query(Category).filter(Category.id.in_(category_ids)).all()
-    # Only add categories that aren't already present
     existing_category_ids = {cat.id for cat in image.categories}
     new_categories = [cat for cat in categories if cat.id not in existing_category_ids]
     image.categories.extend(new_categories)
     db.commit()
     db.refresh(image)
-    
+
     return image
 
 
@@ -170,31 +180,31 @@ async def remove_category_from_image(
     ).filter(Image.id == image_id).first()
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
-    
+
     category = db.query(Category).filter(Category.id == category_id).first()
     if category and category in image.categories:
         image.categories.remove(category)
         db.commit()
         db.refresh(image)
-    
+
     return image
 
 
 @router.put("/{image_id}/notes", response_model=schemas.ImageResponse)
 async def update_image_notes(
     image_id: int,
-    notes: str,
+    body: schemas.NotesUpdate,
     db: Session = Depends(get_db)
 ):
-    """Update image notes"""
+    """Update image notes (max 10,000 characters)"""
     image = db.query(Image).options(
         joinedload(Image.tags),
         joinedload(Image.categories)
     ).filter(Image.id == image_id).first()
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
-    
-    image.notes = notes
+
+    image.notes = body.notes
     db.commit()
     db.refresh(image)
     return image
@@ -207,16 +217,16 @@ async def rotate_image(
     db: Session = Depends(get_db)
 ):
     """Rotate image by 90, 180, or 270 degrees"""
-    if degrees not in [90, 180, 270, -90]:
+    if degrees not in (90, 180, 270, -90):
         raise HTTPException(status_code=400, detail="Degrees must be 90, 180, 270, or -90")
-    
+
     image = db.query(Image).options(
         joinedload(Image.tags),
         joinedload(Image.categories)
     ).filter(Image.id == image_id).first()
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
-    
+
     image.rotation = (image.rotation + degrees) % 360
     db.commit()
     db.refresh(image)
@@ -232,19 +242,18 @@ async def process_ocr(
     image = db.query(Image).filter(Image.id == image_id).first()
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
-    
+
     ocr_service = OCRService()
     ocr_result = ocr_service.extract_text(image.file_path)
-    
+
     if ocr_result['text']:
         image.ocr_text = ocr_result['text']
         image.ocr_processed = datetime.now()
-        
+
         # Update suggestions
         extracted_dates = ocr_service.extract_dates(ocr_result['text'])
         extracted_names = ocr_service.extract_names(ocr_result['text'])
-        
-        from ...services.tag_suggester import TagSuggester
+
         tag_suggester = TagSuggester()
         suggested_tags = tag_suggester.suggest_tags(
             ocr_result['text'],
@@ -252,15 +261,14 @@ async def process_ocr(
             extracted_names
         )
         suggested_category = tag_suggester.suggest_category(ocr_result['text'])
-        
+
         if not image.exif_data:
             image.exif_data = {}
         image.exif_data['suggested_tags'] = suggested_tags
         if suggested_category:
             image.exif_data['suggested_category'] = suggested_category
-        
+
         db.commit()
         db.refresh(image)
-    
-    return image
 
+    return image

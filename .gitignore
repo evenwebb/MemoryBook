@@ -40,6 +40,9 @@ yarn-error.log*
 # Environment
 .env
 .env.local
+.env.dev
+.env.prod
+.env.production
 
 # Storage
 storage/images/*

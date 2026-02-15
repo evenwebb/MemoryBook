@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useMemo, memo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react'
+import { Link } from 'react-router-dom'
 import InfiniteScroll from 'react-infinite-scroll-component'
 import { imageApi, categoryApi, tagApi, searchApi, Image, Category, Tag } from '../../services/api'
 import SearchBar from '../SearchBar/SearchBar'
@@ -59,20 +60,28 @@ const Gallery = () => {
   const [tags, setTags] = useState<Tag[]>([])
   const [loading, setLoading] = useState(true)
   const [hasMore, setHasMore] = useState(true)
-  const [offset, setOffset] = useState(0)
   const [selectedImage, setSelectedImage] = useState<Image | null>(null)
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null)
   const [selectedTags, setSelectedTags] = useState<number[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [sortBy, setSortBy] = useState<'date_desc' | 'date_asc' | 'name'>('date_desc')
 
+  // Use ref for offset to avoid stale closure issues
+  const offsetRef = useRef(0)
+  const abortControllerRef = useRef<AbortController | null>(null)
+
   const loadImages = useCallback(async (reset = false) => {
+    // Cancel any in-flight request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+    }
+    abortControllerRef.current = new AbortController()
+
     try {
-      const currentOffset = reset ? 0 : offset
+      const currentOffset = reset ? 0 : offsetRef.current
       let newImages: Image[]
 
       if (searchQuery || selectedCategory || selectedTags.length > 0) {
-        // Use search API
         const searchResult = await searchApi.search({
           query: searchQuery || undefined,
           category_ids: selectedCategory ? [selectedCategory] : undefined,
@@ -82,7 +91,6 @@ const Gallery = () => {
         })
         newImages = searchResult
       } else {
-        // Use regular images API
         newImages = await imageApi.getImages(
           currentOffset,
           50,
@@ -93,30 +101,33 @@ const Gallery = () => {
 
       // Apply sorting
       if (sortBy === 'date_desc') {
-        newImages = newImages.sort((a, b) => new Date(b.upload_date).getTime() - new Date(a.upload_date).getTime())
+        newImages.sort((a, b) => new Date(b.upload_date).getTime() - new Date(a.upload_date).getTime())
       } else if (sortBy === 'date_asc') {
-        newImages = newImages.sort((a, b) => new Date(a.upload_date).getTime() - new Date(b.upload_date).getTime())
+        newImages.sort((a, b) => new Date(a.upload_date).getTime() - new Date(b.upload_date).getTime())
       } else if (sortBy === 'name') {
-        newImages = newImages.sort((a, b) => a.original_filename.localeCompare(b.original_filename))
+        newImages.sort((a, b) => a.original_filename.localeCompare(b.original_filename))
       }
 
       if (reset) {
         setImages(newImages)
-        setOffset(newImages.length)
+        offsetRef.current = newImages.length
       } else {
         setImages(prev => [...prev, ...newImages])
-        setOffset(prev => prev + newImages.length)
+        offsetRef.current += newImages.length
       }
 
       setHasMore(newImages.length === 50)
       setLoading(false)
     } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return
       console.error('Error loading images:', error)
       setLoading(false)
     }
-  }, [offset, searchQuery, selectedCategory, selectedTags, sortBy])
+  }, [searchQuery, selectedCategory, selectedTags, sortBy])
 
+  // Load initial data once on mount
   useEffect(() => {
+    let cancelled = false
     const fetchInitialData = async () => {
       setLoading(true)
       try {
@@ -124,43 +135,55 @@ const Gallery = () => {
           categoryApi.getCategories(),
           tagApi.getTags(),
         ])
-        setCategories(cats)
-        setTags(tagsData)
+        if (!cancelled) {
+          setCategories(cats)
+          setTags(tagsData)
+        }
       } catch (error) {
         console.error('Error loading initial data:', error)
       }
-      await loadImages(true)
+      if (!cancelled) {
+        await loadImages(true)
+      }
     }
     fetchInitialData()
-  }, [])
+    return () => { cancelled = true }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Reload when filters change
   useEffect(() => {
     loadImages(true)
-  }, [searchQuery, selectedCategory, selectedTags, sortBy])
+  }, [searchQuery, selectedCategory, selectedTags, sortBy]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleSearch = (query: string) => {
+  // Cleanup abort controller on unmount
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort()
+    }
+  }, [])
+
+  const handleSearch = useCallback((query: string) => {
     setSearchQuery(query)
-  }
+  }, [])
 
-  const handleCategoryChange = (categoryId: number | null) => {
+  const handleCategoryChange = useCallback((categoryId: number | null) => {
     setSelectedCategory(categoryId)
-  }
+  }, [])
 
-  const handleTagToggle = (tagId: number) => {
+  const handleTagToggle = useCallback((tagId: number) => {
     setSelectedTags(prev =>
       prev.includes(tagId) ? prev.filter(id => id !== tagId) : [...prev, tagId]
     )
-  }
+  }, [])
 
   const handleImageClick = useCallback((image: Image) => {
     setSelectedImage(image)
   }, [])
 
   const handleCloseViewer = useCallback((updatedImage?: Image) => {
-    // Update the image in the gallery if it was modified
     if (updatedImage) {
-      setImages(prevImages => 
-        prevImages.map(img => 
+      setImages(prevImages =>
+        prevImages.map(img =>
           img.id === updatedImage.id ? updatedImage : img
         )
       )
@@ -179,9 +202,9 @@ const Gallery = () => {
             selectedCategory={selectedCategory}
             onCategoryChange={handleCategoryChange}
           />
-          <select 
-            value={sortBy} 
-            onChange={(e) => setSortBy(e.target.value as any)}
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as 'date_desc' | 'date_asc' | 'name')}
             className="sort-select"
           >
             <option value="date_desc">Newest First</option>
@@ -196,7 +219,7 @@ const Gallery = () => {
       ) : images.length === 0 ? (
         <div className="empty-state">
           <p>No images found. Start by uploading some memories!</p>
-          <a href="/upload" className="btn-upload-link">Upload Images</a>
+          <Link to="/upload" className="btn-upload-link">Upload Images</Link>
         </div>
       ) : (
         <InfiniteScroll
@@ -231,4 +254,3 @@ const Gallery = () => {
 }
 
 export default Gallery
-
