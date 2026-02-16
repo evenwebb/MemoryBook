@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import { useDropzone } from 'react-dropzone'
 import { imageApi, categoryApi, Category } from '../../services/api'
 import './ImageUploader.css'
@@ -230,9 +231,9 @@ const ImageUploader = () => {
               <div className="upload-status-message">Uploading {files.length} image{files.length > 1 ? 's' : ''}...</div>
             )}
             {uploadComplete && (
-              <a href="/" className="btn-view-gallery">
+              <Link to="/" className="btn-view-gallery">
                 View Gallery
-              </a>
+              </Link>
             )}
           </div>
         </div>

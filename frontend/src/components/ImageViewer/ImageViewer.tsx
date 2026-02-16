@@ -221,7 +221,7 @@ const ImageViewer = ({
                   placeholder="Add tag..."
                   value={newTagName}
                   onChange={(e) => setNewTagName(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && handleAddTag()}
+                  onKeyDown={(e) => e.key === 'Enter' && handleAddTag()}
                 />
                 <button onClick={handleAddTag}>Add</button>
               </div>

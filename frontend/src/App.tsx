@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
+import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom'
 import ErrorBoundary from './components/ErrorBoundary'
 import Gallery from './components/Gallery/Gallery'
 import ImageUploader from './components/ImageUploader/ImageUploader'
@@ -12,8 +12,8 @@ function App() {
           <header className="app-header">
             <h1>MemoryBook</h1>
             <nav>
-              <a href="/">Gallery</a>
-              <a href="/upload">Upload</a>
+              <Link to="/">Gallery</Link>
+              <Link to="/upload">Upload</Link>
             </nav>
           </header>
           <main className="app-main">
@@ -29,4 +29,3 @@ function App() {
 }
 
 export default App
-

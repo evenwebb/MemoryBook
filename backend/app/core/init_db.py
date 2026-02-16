@@ -1,9 +1,12 @@
 """
 Initialise database with default categories
 """
+import logging
 from sqlalchemy.orm import Session
 from app.core.database import SessionLocal, engine, Base
 from app.models.database import Category
+
+logger = logging.getLogger("memorybook")
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -26,11 +29,11 @@ def init_default_categories():
             if not existing:
                 category = Category(**cat_data)
                 db.add(category)
-                print(f"Created category: {cat_data['name']}")
+                logger.info("Created category: %s", cat_data["name"])
         db.commit()
-        print("Database initialised successfully!")
+        logger.info("Database initialised successfully!")
     except Exception as e:
-        print(f"Error initialising database: {e}")
+        logger.error("Error initialising database: %s", e)
         db.rollback()
     finally:
         db.close()
